@@ -2,8 +2,8 @@ name: YouTube Auto-Publisher
 
 on:
   schedule:
-    - cron: '0 9 */3 * *'   # Runs every 3 days at 9am UTC
-  workflow_dispatch:          # Also lets you trigger it manually anytime
+    - cron: '0 9 */3 * *'
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -28,9 +28,11 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install \
-            google-generativeai \
+            google-genai \
             edge-tts \
-            moviepy \
+            moviepy==1.0.3 \
+            imageio==2.25.1 \
+            imageio-ffmpeg \
             Pillow \
             google-api-python-client \
             google-auth-oauthlib \
