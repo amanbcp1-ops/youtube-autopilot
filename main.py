@@ -1,7 +1,8 @@
 import os, random, asyncio, requests, json, textwrap
 from pathlib import Path
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import edge_tts
 from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
 from PIL import Image, ImageDraw, ImageFont
@@ -9,31 +10,29 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ── Keys (loaded automatically from GitHub Secrets) ─────────────────
+# ── Keys ─────────────────────────────────────────────────────────────
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 
-# ── Voice styles (rotates randomly each video) ───────────────────────
+# ── Voice styles ─────────────────────────────────────────────────────
 VOICES = [
-    "en-US-JennyNeural",   # Friendly & conversational
-    "en-US-GuyNeural",     # Deep & storytelling
-    "en-US-AriaNeural",    # Calm & professional
+    "en-US-JennyNeural",
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",
 ]
 
-# ────────────────────────────────────────────────────────────────────
 print("=" * 50)
 print("🚀 YouTube Auto-Publisher starting...")
 print("=" * 50)
 
-# ── Step 1: Read your topic ──────────────────────────────────────────
+# ── Step 1: Read topic ───────────────────────────────────────────────
 print("\n📖 Reading topic from topic.txt...")
 topic = Path("topic.txt").read_text().strip()
 print(f"   Topic: {topic}")
 
-# ── Step 2: Write the script using Gemini AI ─────────────────────────
+# ── Step 2: Write script ─────────────────────────────────────────────
 print("\n✍️  Writing script with Gemini AI...")
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=GEMINI_KEY)
 
 script_prompt = f"""
 Write a compelling 4-5 minute YouTube video script about: {topic}
@@ -48,7 +47,11 @@ Important rules:
 - Target length: 450 to 550 words
 """
 
-script = model.generate_content(script_prompt).text.strip()
+response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents=script_prompt
+)
+script = response.text.strip()
 Path("script.txt").write_text(script)
 print(f"   ✅ Script done ({len(script.split())} words)")
 
@@ -63,13 +66,12 @@ async def make_audio():
 asyncio.run(make_audio())
 print("   ✅ Voiceover saved")
 
-# Get exact audio length
 audio_clip = AudioFileClip("voiceover.mp3")
 audio_duration = audio_clip.duration
 audio_clip.close()
 print(f"   Audio length: {audio_duration:.1f} seconds")
 
-# ── Step 4: Fetch stock footage from Pexels ──────────────────────────
+# ── Step 4: Fetch footage ────────────────────────────────────────────
 print("\n🎬  Fetching stock footage from Pexels...")
 keywords = " ".join(topic.replace("Write a 5-minute YouTube script about", "").split()[:4]).strip()
 print(f"   Searching for: '{keywords}'")
@@ -80,26 +82,23 @@ resp = requests.get(
     headers=headers,
     params={"query": keywords, "per_page": 12, "orientation": "landscape", "size": "medium"}
 )
-pexels_data = resp.json()
-videos_list = pexels_data.get("videos", [])
+videos_list = resp.json().get("videos", [])
 
 video_paths = []
 total_downloaded = 0
 
 for i, vid in enumerate(videos_list[:8]):
     files = vid.get("video_files", [])
-    # Prefer HD, fallback to SD
     chosen = next((f for f in files if f.get("quality") == "hd"), None)
     if not chosen:
         chosen = next((f for f in files if f.get("quality") == "sd"), None)
     if not chosen:
         continue
 
-    url = chosen["link"]
     path = f"clip_{i}.mp4"
     print(f"   Downloading clip {i+1}...")
 
-    with requests.get(url, stream=True, timeout=60) as r:
+    with requests.get(chosen["link"], stream=True, timeout=60) as r:
         with open(path, "wb") as f:
             for chunk in r.iter_content(chunk_size=1024 * 64):
                 f.write(chunk)
@@ -112,15 +111,15 @@ for i, vid in enumerate(videos_list[:8]):
         total_downloaded += dur
         print(f"   ✅ Clip {i+1} downloaded ({dur:.1f}s)")
     except Exception:
-        print(f"   ⚠️  Clip {i+1} was corrupt, skipping")
+        print(f"   ⚠️  Clip {i+1} corrupt, skipping")
         continue
 
     if total_downloaded >= audio_duration + 10:
         break
 
-print(f"   Total footage: {total_downloaded:.1f}s for a {audio_duration:.1f}s video")
+print(f"   Total footage: {total_downloaded:.1f}s for {audio_duration:.1f}s video")
 
-# ── Step 5: Assemble the video ───────────────────────────────────────
+# ── Step 5: Assemble video ───────────────────────────────────────────
 print("\n🎞️  Assembling video...")
 
 clips = []
@@ -139,7 +138,7 @@ video = video.subclip(0, min(audio_duration, video.duration))
 audio = AudioFileClip("voiceover.mp3")
 final_video = video.set_audio(audio)
 
-print("   Rendering... (this takes 3-5 mins on GitHub Actions)")
+print("   Rendering... (takes 3-5 mins)")
 final_video.write_videofile(
     "output.mp4",
     fps=24,
@@ -155,15 +154,12 @@ print("\n🖼️  Creating thumbnail...")
 img = Image.new("RGB", (1280, 720))
 draw = ImageDraw.Draw(img)
 
-# Dark gradient background
 for y in range(720):
     shade = int(10 + (y / 720) * 35)
     draw.line([(0, y), (1280, y)], fill=(shade, shade + 5, shade + 25))
 
-# Accent bar at top
 draw.rectangle([(0, 0), (1280, 8)], fill=(255, 80, 50))
 
-# Try to load a bold font, fall back gracefully
 try:
     font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 78)
     font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 38)
@@ -171,7 +167,6 @@ except Exception:
     font_big = ImageFont.load_default()
     font_small = font_big
 
-# Main title (wrapped)
 clean_topic = topic.replace("Write a 5-minute YouTube script about", "").strip().title()
 lines = textwrap.wrap(clean_topic, width=18)
 
@@ -180,14 +175,14 @@ for line in lines[:3]:
     bbox = draw.textbbox((0, 0), line, font=font_big)
     w = bbox[2] - bbox[0]
     x = (1280 - w) // 2
-    draw.text((x + 3, y_pos + 3), line, font=font_big, fill=(0, 0, 0))   # shadow
+    draw.text((x + 3, y_pos + 3), line, font=font_big, fill=(0, 0, 0))
     draw.text((x, y_pos), line, font=font_big, fill=(255, 255, 255))
     y_pos += 95
 
 img.save("thumbnail.jpg", quality=95)
 print("   ✅ Thumbnail created!")
 
-# ── Step 7: Generate title, description & tags ───────────────────────
+# ── Step 7: Generate metadata ────────────────────────────────────────
 print("\n📝  Generating video metadata...")
 
 meta_prompt = f"""
@@ -202,8 +197,11 @@ Return ONLY a valid JSON object. No markdown. No explanation. No code fences.
 }}
 """
 
-meta_raw = model.generate_content(meta_prompt).text.strip()
-# Clean up any accidental markdown fences
+meta_response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents=meta_prompt
+)
+meta_raw = meta_response.text.strip()
 if "```" in meta_raw:
     meta_raw = meta_raw.split("```")[1]
     if meta_raw.startswith("json"):
@@ -251,9 +249,7 @@ while response is None:
         print(f"   Uploading... {int(status.progress() * 100)}%")
 
 video_id = response["id"]
-print(f"   ✅ Video uploaded!")
 
-# Set thumbnail
 youtube.thumbnails().set(
     videoId=video_id,
     media_body=MediaFileUpload("thumbnail.jpg")
@@ -261,6 +257,5 @@ youtube.thumbnails().set(
 
 print("\n" + "=" * 50)
 print(f"🎉 ALL DONE!")
-print(f"   Your video is live at:")
 print(f"   https://youtube.com/watch?v={video_id}")
 print("=" * 50)
